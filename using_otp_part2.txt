@@ -1,0 +1,324 @@
+# Goal
+
+- ElixirからOTPを利用したサンプルを作成する
+- OTPを利用したシステムの基本的なアーキテクチャを習得する
+- OTPを使うとはどういうことなのか疑問を解消する
+
+# Dev-Environment
+
+- OS: Windows8.1
+- Erlang: Eshell V7.2.1, OTP-Version 18.1
+- Elixir: v1.2.0
+
+# Using OTP with Elixir (Part2)
+
+- 汎用イベントハンドラで使われる考え方
+- エラーロガーの仕組み (いまここ！)
+- アラーム管理
+- アプリケーションサーバの構築
+- 監視ツリーの作成とサーバの追加(Supervisor)
+- アプリケーションのパッケージ化(これはやるか分からない...)
+
+[前回](http://daruiapprentice.blogspot.jp/2016/03/using-otp-with-elixir-part-1.html)はイベントハンドラについてやりました。
+今日からは、エラーロガーについてやります。
+
+OTPシステムには、カスタマイズ可能なエラーロガーがあるそうな。
+んで、これには3つの視点があります。
+
+- プログラマの視点: エラーログを取るためにコードに追加する関数呼び出しが問題になる
+- 構成面での視点: エラーロガーがデータをどこにどのように格納するのかが問題になる
+- レポート面での視点: エラー発生後の解析が問題になる
+
+それぞれを順番にやっていく。
+
+### プログラマの視点
+
+まず、プログラマの視点から。
+さっそく、Loggerを使ってエラーログを取ってみる。
+
+LoggerはElixirでerror_loggerをラップしたものになります。
+(ドキュメントに書いてあります)
+参考: [Elixir v1.2.3 - Logger](http://elixir-lang.org/docs/stable/logger/Logger.html)
+
+#### Example:
+
+```elixir
+## Loggerからエラーメッセージを送ってみる
+iex> require Logger
+nil
+iex> Logger.error "An error has occurred\n"
+:ok
+
+21:25:30.633 [error] An error has occurred
+
+## error_loggerを使い、エラーメッセージをエラーロガーへ送ってみる
+iex> :error_logger.error_msg("An error has occurred\n")
+:ok
+iex>
+21:22:55.497 [error] An error has occurred
+
+iex> :error_logger.error_msg("~s, an error has occurred\n", ["darui"])
+:ok
+iex>
+21:37:14.947 [error] darui, an error has occurred
+
+iex> :error_logger.error_report([{:tag1, :data1}, :a_term, {:tag2, :data2}])
+:ok
+iex>
+21:35:38.495 [error] [{:tag1, :data1}, :a_term, {:tag2, :data2}]
+```
+
+一応、error_loggerも使って出力してみました。
+(error_reportに相当するものが分からなかった...orz)
+
+### 構成面での視点とレポートの視点
+
+Erlangのデフォルトの設定だと全てのエラーがErlangシェルに表示される。
+シェルに出力されるエラーを整形して1つのファイルに書き込むこともできる。
+ついでに、循環ログも作れるそうです。
+(循環ログ...ちょっと作りたい...どうせ車輪の再開発になるのでしょうが(笑))
+
+SASL(= System Architecture Support Libraries)を使うようにコンフィグに設定を書きます。
+(このオプションはデフォルトではfalseです)
+
+#### File: config/config.exs
+
+```elixir
+use Mix.Config
+
+config :logger,
+  handle_sasl_reports: true
+```
+
+最初に書いておきます...実行するとめっちゃ出力されます。
+
+#### Example:
+
+```elixir
+>iex --erl "-boot start_sasl" -S mix
+
+=PROGRESS REPORT==== 8-Mar-2016::22:19:26 ===
+          supervisor: {local,sasl_safe_sup}
+             started: [{pid,<0.34.0>},
+                       {id,alarm_handler},
+                       {mfargs,{alarm_handler,start_link,[]}},
+                       {restart_type,permanent},
+                       {shutdown,2000},
+                       {child_type,worker}]
+
+...大量にあるので削除(見たい人は実行してみよう！)
+
+22:19:27.148 [info]  Application otp_system_sample started at :nonode@nohost
+Interactive Elixir (1.2.0) - press Ctrl+C to exit (type h() ENTER for help)
+iex> require Logger
+nil
+iex> Logger.error("This is an error")
+:ok
+
+22:19:47.189 [error] This is an error
+```
+
+まずは、付けたオプション何って話ですね。
+Erlangには、実稼働システムを動作させるのに適した環境を作るというオプションがある。
+これを付けるとエラーログや過負荷保護など面倒なところをSASLが見てくれるようになる。
+
+```txt
+erl -boot start_sasl
+```
+
+参考までに...逆に、簡単な形のエラーログしか提供しないようにするプログラム環境に適した環境を作ることもできる。
+
+```txt
+erl -boot start_clean
+```
+
+今度は、SASLをなしで起動しましょう。
+(出力は変わらないのですが...)
+
+#### File: config/config.exs
+
+```elixir
+use Mix.Config
+
+config :logger,
+  handle_sasl_reports: false
+```
+
+#### Example:
+
+```elixir
+>iex --erl "-boot start_sasl" -S mix
+
+=PROGRESS REPORT==== 8-Mar-2016::22:26:23 ===
+          supervisor: {local,sasl_safe_sup}
+             started: [{pid,<0.34.0>},
+                       {id,alarm_handler},
+                       {mfargs,{alarm_handler,start_link,[]}},
+                       {restart_type,permanent},
+                       {shutdown,2000},
+                       {child_type,worker}]
+
+...
+
+=PROGRESS REPORT==== 8-Mar-2016::22:26:24 ===
+         application: otp_system_sample
+          started_at: nonode@nohost
+Interactive Elixir (1.2.0) - press Ctrl+C to exit (type h() ENTER for help)
+iex> require Logger
+nil
+iex> Logger.error("This is an error")
+:ok
+
+22:26:29.025 [error] This is an error
+```
+
+出力が変わらないけど、何が変わったのか？
+エラーレポートだけ出力されるようになっただけです。
+(進捗レポートなどが出力されなくなったとも言います)
+
+とっても、いまいち実感が分かりませんが...
+現状、深い所まで分かってないのでとりあえず進みます。
+
+ファイルへログの出力をしたいのですが、Loggerだけだと出力方法が分からないので、
+error_loggerを使っていきます。(ライブラリ使えばいけるんですが...)
+
+#### File: elog.config
+
+```erlang
+[{sasl, [
+  {sasl_error_logger, {file, "./log/error.log"}}
+]}].
+```
+
+logディレクトリとerror.logファイルは作成してください。
+
+#### Example:
+
+```elixir
+>iex --erl "-boot start_sasl -config elog" -S mix
+```
+
+log/error.logを開いて確認してみましょう。
+最初の方だけですが、こんな感じに出力されていれば大丈夫。
+
+```txt
+=PROGRESS REPORT==== 8-Mar-2016::23:23:07 ===
+          supervisor: {local,sasl_safe_sup}
+             started: [{pid,<0.35.0>},
+                       {id,alarm_handler},
+                       {mfargs,{alarm_handler,start_link,[]}},
+                       {restart_type,permanent},
+                       {shutdown,2000},
+                       {child_type,worker}]
+
+...
+```
+
+コンフィグを設定して、循環ログを作ってみる。
+
+#### File: elog.config
+
+```erlang
+[{sasl, [
+  {sasl_error_logger, false},
+  {error_logger_mf_dir, "./log/error_logs"},
+  {error_logger_mf_maxbytes, 10485760},
+  {error_logger_mf_maxfiles, 10}
+]}].
+```
+
+error_logger_mf_dir: 出力先ディレクトリ
+error_logger_mf_maxbytes: ログファイル1あたりのバイト数(今回は10MB)
+error_logger_mf_maxfiles: ログファイルの最大数
+
+#### Example:
+
+```elixir
+>iex --erl "-boot start_sasl -config elog" -S mix
+
+iex> :error_logger.error_msg("This is an error\n")
+:ok
+iex>
+23:30:04.800 [error] This is an error
+```
+
+ディレクトリを確認に行くと、1とindexと言うファイルができている。(取り出し方は後ほど...)
+正直、こうやってやるならErlang使えよ...と言うのは言ってはいけない(笑)
+
+#### Note:
+
+```txt
+実環境では、進捗レポートと情報レポートは不要。
+必要なのはエラーレポートのみなので、以下のように設定するとよい。
+(設定しないと、進捗レポートと情報レポートでログがあふれるらしい...)
+
+[{sasl, [
+  {sasl_error_logger, false},
+  {errlog_type, error},
+  {error_logger_mf_dir, "./log/error_logs"},
+  {error_logger_mf_maxbytes, 10485760},
+  {error_logger_mf_maxfiles, 10}
+]}].
+
+errlog_typeでエラーのみ出力するように指定している。
+```
+
+さっき出したログのエラーを解析してみる。
+
+#### Example:
+
+```elixir
+iex> :rb.help()
+...長いので割愛
+
+iex> :rb.start([{:max, 20}])
+rb: reading report...done.
+{:ok, #PID<0.101.0>}
+iex> :rb.list
+  No                Type   Process       Date     Time
+  ==                ====   =======       ====     ====
+  20            progress  <0.23.0> 2016-03-08 23:29:46
+  19            progress  <0.51.0> 2016-03-08 23:29:46
+  18            progress  <0.23.0> 2016-03-08 23:29:46
+  17            progress  <0.57.0> 2016-03-08 23:29:46
+  16            progress  <0.57.0> 2016-03-08 23:29:46
+  15            progress  <0.57.0> 2016-03-08 23:29:46
+  14            progress  <0.57.0> 2016-03-08 23:29:46
+  13            progress  <0.23.0> 2016-03-08 23:29:46
+  12            progress  <0.69.0> 2016-03-08 23:29:47
+  11            progress  <0.69.0> 2016-03-08 23:29:47
+  10            progress  <0.69.0> 2016-03-08 23:29:47
+   9            progress  <0.23.0> 2016-03-08 23:29:47
+   8         info_report  <0.23.0> 2016-03-08 23:29:47
+   7            progress  <0.85.0> 2016-03-08 23:29:47
+   6            progress  <0.85.0> 2016-03-08 23:29:47
+   5            progress  <0.85.0> 2016-03-08 23:29:47
+   4            progress  <0.85.0> 2016-03-08 23:29:47
+   3            progress  <0.23.0> 2016-03-08 23:29:47
+   2            progress  <0.23.0> 2016-03-08 23:29:47
+   1               error   <0.9.0> 2016-03-08 23:30:04
+:ok
+iex> :rb.show(1)
+
+ERROR REPORT  <0.94.0>                                      2016-03-08 23:30:04
+===============================================================================
+
+This is an error
+:ok
+```
+
+数ページ進むのに3時間も掛かった...中々、ぱねぇっす...
+いつのまにかエラーロガーのページが終わってたので、次からはアラーム管理に移ります。
+
+詳しく調べたいが...いかんせん実力が足りない...
+もう少し深くやりたいが先に進むことを優先します。
+まぁ、そのうち分かるでしょう！(楽観)
+
+# Bibliography
+[Erlang - error_logger](http://erlang.org/doc/man/error_logger.html)
+[Erlang - sasl](http://erlang.org/doc/man/sasl_app.html)
+[Elixir v1.2.3 - Logger](http://elixir-lang.org/docs/stable/logger/Logger.html)
+[How to Log something in Controller when Phoenix Server is running?](http://stackoverflow.com/questions/30958616/how-to-log-something-in-controller-when-phoenix-server-is-running)
+[PhoenixでのWebサービス開発(1) サーバログ編](http://qiita.com/snowball/items/10eaf0c9e0fd39187019)
+[janpieper/gist:6111302 - Elixir: iex --erl "-boot start_sasl" --sname a --cookie dummy -S mix](https://gist.github.com/janpieper/6111302)
+[徒然なるままに - Loggerのconsole出力をファイルに書き出す](https://kazucocoa.wordpress.com/2016/01/11/elixirlogger%E3%81%AEconsole%E5%87%BA%E5%8A%9B%E3%82%92%E3%83%95%E3%82%A1%E3%82%A4%E3%83%AB%E3%81%AB%E6%9B%B8%E3%81%8D%E5%87%BA%E3%81%99/)

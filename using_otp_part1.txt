@@ -1,0 +1,152 @@
+# Goal
+
+- ElixirからOTPを利用したサンプルを作成する
+- OTPを利用したシステムの基本的なアーキテクチャを習得する
+- OTPを使うとはどういうことなのか疑問を解消する
+
+# Dev-Environment
+
+- OS: Windows8.1
+- Erlang: Eshell V7.2.1, OTP-Version 18.1
+- Elixir: v1.2.0
+
+# Using OTP with Elixir (Part1)
+
+バックエンドとして機能するシステムを作成します。
+実際にサーバをクラッシュさせることをわざとやる内容もあります。
+クラッシュさせると言うことは監視ツリーも出てきます。
+そして、原因追及のためのログなども...
+
+さくっとまとめると、以下のようなことをやります。
+
+- 汎用イベントハンドラで使われる考え方
+- エラーロガーの仕組
+- アラーム管理
+- アプリケーションサーバの構築
+- 監視ツリーの作成とサーバの追加(Supervisor)
+- アプリケーションのパッケージ化(これはやるか分からない...)
+
+#### Note:
+
+```txt
+OTPには各分野の間に循環した依存関係がある。
+```
+
+この記事では、汎用イベントハンドラをやっていきます。
+
+#### File: lib/event_handler.ex
+
+```elixir
+defmodule EventHandler do
+  def make(name) do
+    Process.register(spawn(fn -> my_handler(&no_op/1) end), name)
+  end
+
+  def add_handler(name, fun) do
+    send(name, {:add, fun})
+  end
+
+  def event(name, x) do
+    send(name, {:event, x})
+  end
+
+  defp my_handler(fun) do
+    receive do
+      {:add, fun1} -> my_handler(fun1)
+      {:event, any} ->
+        try do
+          fun.(any)
+          my_handler(fun)
+        catch
+          _e -> :exit
+        end
+    end
+  end
+
+  defp no_op(_) do
+    :void
+  end
+end
+```
+
+イベントは何かが起こったときに、メッセージを送ります。
+メッセージの受け取り先は、イベントハンドラになります。
+
+#### Example:
+
+```elixir
+iex> EventHandler.make(:errors)
+true
+iex> EventHandler.event(:errors, :hi)
+{:event, :hi}
+```
+
+ここではイベントの登録がないので、まだ何も起こらない。
+
+#### Note:
+
+```txt
+モジュール内で定義している関数を関数名/アリティで使いたい場合、
+"&fun/arity"として記述すればよい。
+
+iex> f = &EventHandler.event/2
+&EventHandler.event/2
+iex> f.(:errors, :hi)
+{:event, :hi}
+
+久々に使ったら忘れてしまった...
+```
+
+イベントハンドラにインストールするコールバックモジュールを作成します。
+
+ポイントとしては、前回作成したイベントハンドラがカスタムハンドラをインストールできるインフラストラクチャになっている点。
+まぁ、やれば分かります。難しい動作はしていないはずなので...(マッチョな考え方じゃないよな？？？)
+
+#### File: lib/motor_controller.ex
+
+```elixir
+defmodule MotorController do
+  def add_event_handler do
+    EventHandler.add_handler(:errors, &controller/1)
+  end
+
+  defp controller(:too_hot) do
+    IO.inspect "Turn off the motor-m"
+  end
+  defp controller(x) do
+    IO.inspect "#{__MODULE__} ignored event: #{x}"
+  end
+end
+```
+
+ハンドラにイベントを送ると、MotorController.controller/1で処理されるようになる。
+
+#### Example:
+
+```elixir
+iex> EventHandler.make(:errors)
+true
+iex> EventHandler.event(:errors, :hi)
+{:event, :hi}
+iex> MotorController.add_event_handler
+{:add, #Function<0.61024124/1 in MotorController.add_event_handler/0>}
+iex> EventHandler.event(:errors, :cool)
+{:event, :cool}
+iex> "Elixir.MotorController ignored event: cool"
+iex> EventHandler.event(:errors, :too_hot)
+{:event, :too_hot}
+"Turn off the motor-m"
+```
+
+何故、イベントハンドラを先にやったのか...
+次にやるエラーロガーのインフラストラクチャーが今回のイベントハンドラパターンに似ているためです。
+
+イベントハンドラはこれで終わり、次からはエラーロガーについてやります。
+ElixirにはLoggerがあるので、あくまで勉強のためといったところになると思います。
+実際はLoggerを使うことになるかとzzz
+しかし、知っていれば色々いじれるようになる...かもしれない。
+
+ところで、Erlang側のコードにcatchだけの記述があるのだが...何あれ？
+
+# Bibliography
+[Why are there two kinds of functions in Elixir?](http://stackoverflow.com/questions/18011784/why-are-there-two-kinds-of-functions-in-elixir)

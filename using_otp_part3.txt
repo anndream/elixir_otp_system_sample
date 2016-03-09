@@ -1,0 +1,155 @@
+# Goal
+
+- ElixirからOTPを利用したサンプルを作成する
+- OTPを利用したシステムの基本的なアーキテクチャを習得する
+- OTPを使うとはどういうことなのか疑問を解消する
+
+# Dev-Environment
+
+- OS: Windows8.1
+- Erlang: Eshell V7.2.1, OTP-Version 18.1
+- Elixir: v1.2.0
+
+# Using OTP with Elixir (Part3)
+
+- 汎用イベントハンドラで使われる考え方
+- エラーロガーの仕組み
+- アラーム管理 (いまここ！)
+- アプリケーションサーバの構築
+- 監視ツリーの作成とサーバの追加(Supervisor)
+- アプリケーションのパッケージ化(これはやるか分からない...)
+
+[前回](http://daruiapprentice.blogspot.jp/2016/03/using-otp-with-elixir-part-2.html)はエラーロガーについてやりました。
+今日は、アラーム管理についてやります。
+
+この記事では、GenEvent(Elixir)とalarm_handler(Erlang)を利用する。
+簡単に調べてみたところ、Elixir側でalarm_handler(Erlang)に相当するものはなかった。(見つけられなかった？)
+(ドキュメントのサーチにも引っかからん...)
+
+そのため、alarm_handlerはそのまま使います。
+
+まずは、GenEventと利用してカスタムアラームハンドラを作成する。
+
+#### File: lib/my_alarm_handler.exs
+
+```elixir
+defmodule MyAlarmHandler do
+  use GenEvent
+
+  def init(args) do
+    IO.inspect "*** my_alarm_handler init:"
+    IO.inspect args
+    {:ok, 0}
+  end
+
+  def handle_event({:set_alarm, :tooHot}, n) do
+    :error_logger.error_msg("*** Tell the Engineer to turn on the fan~n")
+    {:ok, n+1}
+  end
+
+  def handle_event({:clear_alarm, :tooHot}, n) do
+    :error_logger.error_msg("*** Denger over. Turn off the fan~n")
+    {:ok, n}
+  end
+
+  def handle_event(event, n) do
+    IO.inspect("*** unmatched event:~p~n", [event])
+    {:ok, n}
+  end
+
+  def handle_call(_request, n) do
+    reply = n
+    {:ok, reply, n}
+  end
+
+  def handle_info(_info, n) do
+    {:ok, n}
+  end
+
+  def terminate(_reason, _n) do
+    :ok
+  end
+end
+```
+
+GenServerと似てますね。
+カスタムアラームハンドラを使ってみましょう。
+
+#### Example:
+
+```elixir
+iex> :alarm_handler.set_alarm(:tooHot)
+:ok
+22:52:38.129 [info]  [alarm_handler: {:set, :tooHot}]
+iex> GenEvent.swap_handler(:alarm_handler, :alarm_handler, :swap, MyAlarmHandler, :xyz)
+"*** my_alarm_handler init:"
+{:xyz, {:alarm_handler, [:tooHot]}}
+:ok
+iex> :alarm_handler.set_alarm(:tooHot)
+:ok
+iex>
+22:58:10.095 [error] *** Tell the Engineer to turn on the fan
+
+iex> :alarm_handler.clear_alarm(:tooHot)
+:ok
+
+22:58:40.486 [error] *** Denger over. Turn off the fan
+
+iex> :rb.start([{:max, 20}])
+rb: reading report...done.
+{:ok, #PID<0.115.0>}
+iex> :rb.list
+  No                Type   Process       Date     Time
+  ==                ====   =======       ====     ====
+  ...
+   3         info_report  <0.30.0> 2016-03-09 22:52:38
+   2               error  <0.30.0> 2016-03-09 22:58:10
+   1               error  <0.30.0> 2016-03-09 22:58:40
+:ok
+iex> :rb.show 1
+
+ERROR REPORT  <0.34.0>                                      2016-03-09 22:58:40
+===============================================================================
+
+*** Denger over. Turn off the fan
+:ok
+```
+
+-boot start_saslのオプションを指定しています。
+このオプションを指定すると、Erlangでは標準のアラームハンドラが使われます。
+
+GenEvent.swap_handlerでカスタムハンドラを使うように設定しています。
+(:xyzには特に意味はない。分かりやすく指定しているだけ別に自分の名前でもいいのです)
+
+#### Note:
+
+```txt
+何の意図があるのかは分かりませんが、
+渡すものは結局同じなのにElixirとErlangで微妙に引数が違う...(解せぬ)
+
+## Elixirでの定義
+swap_handler(manager, handler1, args1, handler2, args2)
+
+%% Erlangでの定義
+swap_handler(EventMgrRef, {Handler1,Args1}, {Handler2,Args2}) -> Result
+```
+
+実際に出力結果にも出ていますが、
+set_alarm、clear_alarmを使い、アラームの設定と解除をしています。
+カスタムアラームハンドラの方でちゃんと処理されていますね。
+
+次からは、アプリケーションとなるサーバを作っていきます。
+色々と前提となる知識の習得がここまでといったところですね。
+今回使ったアラーム管理も組み込んでいくみたいです。
+
+ようやく折り返し地点かと思いきや...ここからが長い(嬉しい悲鳴)
+
+最近、Erlangに触れ始めて思い出したのですが、ErlangerやErlang in Angerも読まないと...
+やりたいことが多すぎる...時間が増えるか経験をフィードバックできる分身が欲しい...
+全部はできないからフォーカスしないといけないですが...悩ましいですね(´･ω･`)
+
+# Bibliography
+[Elixir v1.2.3 - GenEvent](http://elixir-lang.org/docs/stable/elixir/GenEvent.html)
+[Elixir School - OTP Concurrency](https://elixirschool.com/lessons/advanced/otp-concurrency/#genevent)
+[Erlang - gen_event](http://erlang.org/doc/man/gen_event.html)
+[Erlang - OTP Design Principles User's Guide - 4 gen_event Behaviour](http://erlang.org/doc/design_principles/events.html)
