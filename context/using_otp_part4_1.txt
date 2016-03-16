@@ -1,0 +1,174 @@
+# Goal
+
+- ElixirからOTPを利用したサンプルを作成する
+- OTPを利用したシステムの基本的なアーキテクチャを習得する
+- OTPを使うとはどういうことなのか疑問を解消する
+
+# Dev-Environment
+
+- OS: Windows8.1
+- Erlang: Eshell V7.2.1, OTP-Version 18.1
+- Elixir: v1.2.0
+
+# Using OTP with Elixir (Part4-1)
+
+- 汎用イベントハンドラで使われる考え方
+- エラーロガーの仕組み
+- アラーム管理 
+- アプリケーションサーバの構築(いまここ！)
+- 監視ツリーの作成とサーバの追加
+- アプリケーションのパッケージ化(これはやるか分からない...)
+
+[前回](http://daruiapprentice.blogspot.jp/2016/03/using-otp-with-elixir-part-3.html)はアラーム管理についてやりました。
+今日からは、アプリケーションサーバの構築を行います。
+
+まずは、素数を計算するサーバを構築します。
+
+#### File: lib/prime_server.ex
+
+```elixir
+defmodule PrimeServer do
+  use GenServer
+
+  def start_link do
+    GenServer.start_link(__MODULE__, [], name: __MODULE__)
+  end
+
+  def new_prime(n) do
+    GenServer.call(__MODULE__, {:prime, n}, 20000)
+  end
+
+  def init([]) do
+    Process.flag(:trap_exit, true)
+    IO.inspect("#{__MODULE__} starting\n")
+    {:ok, 0}
+  end
+
+  def handle_call({:prime, k}, _from, n) do
+    {:reply, make_new_prime(k), n+1}
+  end
+
+  def handle_cast(_msg, n) do
+    {:noreply, n}
+  end
+
+  def handle_info(_info, n) do
+    {:noreply, n}
+  end
+
+  def terminate(_reason, _n) do
+    IO.inspect("#{__MODULE__} stopping\n")
+  end
+
+  def code_change(_old_vsn, n, _extra) do
+    {:ok, n}
+  end
+
+  defp make_new_prime(k) do
+    if k > 100 do
+      :alarm_handler.set_alarm(:tooHot)
+      n = :lib_primes.make_prime(k)
+      :alarm_handler.clear_alarm(:tooHot)
+      n
+    else
+      :lib_primes.make_prime(k)
+    end
+  end
+end
+```
+
+前回やったアラームの処理をどのように組み込んでいるかが重要なポイントです。
+
+lib_primesモジュールなんてない...
+そのため、プログラミングErlangのソースコードが置いてあるGitのリポジトリからコピペしコンパイルする。
+
+参考: [everpeace/programming-erlang-code - lib_primes.erl](https://github.com/everpeace/programming-erlang-code/blob/master/code/lib_primes.erl)
+
+lib_primesモジュールのソースを見てみるとlib_linモジュールというものを使っている。
+これもコピペしてコンパイルする。
+
+参考: [everpeace/programming-erlang-code - lib_lin.erl](https://github.com/everpeace/programming-erlang-code/blob/master/code/lib_lin.erl)
+
+ソースコードの作成場所は、プロジェクト内に"erl"と言うディレクトリを作成した。
+
+lib_primesモジュールの方だが、
+コピペでコンパイルすると「古いAPI使わないで新しいの使ってね。詳しくはこのドキュメントに書いてあるよ」っと警告が出る。
+
+折角なので、新しいAPIに変更しておく。
+
+#### File: erl/lib_primes.erl
+
+```erlang
+...
+
+new_seed() ->
+    {_,_,X} = erlang:timestamp(),
+    {H,M,S} = time(),
+    H1 = H * X rem 32767,
+    M1 = M * X rem 32767,
+    S1 = S * X rem 32767,
+    put(random_seed, {H1,M1,S1}).
+```
+
+#### Note:
+
+```txt
+erlang:now/0は古いAPIのようです。
+(何か、前にも同じことで警告見た気が...)
+```
+
+参考: [Erlang - 2 Time and Time Correction in Erlang](http://erlang.org/doc/apps/erts/time_correction.html#Multi_Time_Warp_Mode)
+
+それではコンパイルする。
+
+#### Example:
+
+```cmd
+> cd erl
+> erl -compile lib_primes.erl
+> erl -compile lib_lin.erl
+```
+
+erlディレクトリの直下にbeamファイルが作成されている。
+そのbeamファイルを以下のディレクトリへコピーする。
+
+#### Directory: _build/dev/lib/otp_system_sample/ebin
+
+これでとりあえずは動くようになった。
+試してみよう。
+
+#### Example:
+
+```elixir
+> iex --erl "-boot start_sasl -config elog" -S mix
+
+iex> PrimeServer.start_link
+"Elixir.PrimeServer starting\n"
+{:ok, #PID<0.96.0>}
+iex> PrimeServer.new_prime(5)
+Generating a 5 digit prime ................
+62119
+iex> PrimeServer.new_prime(101)
+Generating a 101 digit prime ...........
+15:15:45.421 [info]  [alarm_handler: {:set, :tooHot}]
+................................................................................................................
+74803864321717153802874416588765054708248376608110687060712594131517770913540462697216660049919938923
+
+15:15:45.719 [info]  [alarm_handler: {:clear, :tooHot}]
+```
+
+100より大きい値は、アラームも動いていますね。
+よしよし、問題ないです。
+
+長くなってしまうので記事を分割します。
+Part4-1はここまで、これで素数の計算を行うサーバが作成できました。
+お次のPart4-2では、面積を求めるサーバを作成していきます。
+
+# Bibliography
+[Elixir v1.2.3 - GenServer](http://elixir-lang.org/docs/stable/elixir/GenServer.html)
+[Elixir v1.2.3 - Process](http://elixir-lang.org/docs/stable/elixir/Process.html#flag/2)
+[Erlang - erlang](http://erlang.org/doc/man/erlang.html#process_flag-2)
+[Erlang - 12 Processes](http://erlang.org/doc/reference_manual/processes.html)
+[Elixir - Linking Elixir processes together](http://eddwardo.github.io/elixir/links/2015/11/04/links-in-elixir/)
+[everpeace/programming-erlang-code - lib_primes.erl](https://github.com/everpeace/programming-erlang-code/blob/master/code/lib_primes.erl)
+[Erlang - 14 Compilation and Code Loading](http://erlang.org/doc/reference_manual/code_loading.html)

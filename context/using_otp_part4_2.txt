@@ -1,0 +1,94 @@
+# Goal
+
+- ElixirからOTPを利用したサンプルを作成する
+- OTPを利用したシステムの基本的なアーキテクチャを習得する
+- OTPを使うとはどういうことなのか疑問を解消する
+
+# Dev-Environment
+
+- OS: Windows8.1
+- Erlang: Eshell V7.2.1, OTP-Version 18.1
+- Elixir: v1.2.0
+
+# Using OTP with Elixir (Part4-2)
+
+- 汎用イベントハンドラで使われる考え方
+- エラーロガーの仕組み
+- アラーム管理 
+- アプリケーションサーバの構築(いまここ！)
+- 監視ツリーの作成とサーバの追加
+- アプリケーションのパッケージ化(これはやるか分からない...)
+
+[前回](http://daruiapprentice.blogspot.jp/2016/03/using-otp-with-elixir-part-4-1.html)は素数サーバを作成しました。
+次は、面積を計算するサーバの構築を作成します。
+(素数サーバをコピペして切り貼りすると楽…つまり基本の形はあまり変わらないのでしょう)
+
+#### File: lib/area_server.ex
+
+```elixir
+defmodule AreaServer do
+  use GenServer
+
+  def start_link do
+    GenServer.start_link(__MODULE__, [], name: __MODULE__)
+  end
+
+  def area(thing) do
+    GenServer.call(__MODULE__, {:area, thing})
+  end
+
+  def init([]) do
+    Process.flag(:trap_exit, true)
+    IO.inspect("#{__MODULE__} starting\n")
+    {:ok, 0}
+  end
+
+  def handle_call({:area, thing}, _from, n) do
+    {:reply, compute_area(thing), n+1}
+  end
+
+  def handle_cast(_msg, n) do
+    {:noreply, n}
+  end
+
+  def handle_info(_info, n) do
+    {:noreply, n}
+  end
+
+  def terminate(_reason, _n) do
+    IO.inspect("#{__MODULE__} stopping\n")
+  end
+
+  def code_change(_old_vsn, n, _extra) do
+    {:ok, n}
+  end
+
+  defp compute_area({:square, x}) do
+    x * x
+  end
+  defp compute_area({:rectangle, x, y}) do
+    raise "oops!!"
+  end
+end
+```
+
+さて、おかしなコードがありますね。
+とりあえず、上記のコードの通りで大丈夫です。
+次回のスーパバイザを使った時に、わざとサーバをクラッシュさせ、再起動させるためにあえてそうしています。
+
+#### Example:
+
+```elixir
+iex> AreaServer.start_link
+"Elixir.AreaServer starting\n"
+{:ok, #PID<0.107.0>}
+iex> AreaServer.area({:square, 5})
+25
+```
+
+今回は、特に難しいこともなかったですね。
+もう少し、何かあると思ったのですが、何事もなくよかったです。
+次回から監視ツリーの構築を行っていきます。
+
+# Bibliography
+なし
