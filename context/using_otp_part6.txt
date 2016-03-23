@@ -1,0 +1,299 @@
+# Goal
+
+- ElixirからOTPを利用したサンプルを作成する
+- OTPを利用したシステムの基本的なアーキテクチャを習得する
+- OTPを使うとはどういうことなのか疑問を解消する
+
+# Dev-Environment
+
+- OS: Windows8.1
+- Erlang: Eshell V7.2.1, OTP-Version 18.1
+- Elixir: v1.2.0
+
+# Using OTP with Elixir (Part6)
+
+- 汎用イベントハンドラで使われる考え方
+- エラーロガーの仕組み
+- アラーム管理 
+- アプリケーションサーバの構築
+- 監視ツリーの作成とサーバの追加
+- アプリケーションのパッケージ化(いまここ！)
+
+[前回](http://daruiapprentice.blogspot.jp/2016/03/using-otp-with-elixir-part-5.html)は監視ツリーを作成しました。
+今回は、アプリケーションのパッケージ化を行います。
+
+ElixirのApplicationモジュールの簡単な使い方といったところです。
+Erlangで言うところのapplicationモジュールですね。
+
+さて、早速構築！っといきたいところですが、
+ちょっとその前に生成された.appファイルを確認してみましょう。
+
+どこにあるのかといいますと...コンパイルしたときに生成されるbeamファイルと同じディレクトリに生成されています。
+詳しくは以下です。
+
+#### File: _build/dev/lib/otp_system_sample/ebin/otp_system_sample.app
+
+```txt
+{application,otp_system_sample,
+             [{registered,[]},
+              {description,"otp_system_sample"},
+              {vsn,"0.0.1"},
+              {modules,['Elixir.AreaServer','Elixir.EventHandler',
+                        'Elixir.MotorController','Elixir.MyAlarmHandler',
+                        'Elixir.PrimeServer','Elixir.SellaprimeSupervisor',
+                        lib_lin,lib_primes]},
+              {applications,[kernel,stdlib,elixir,logger,otp_system_sample]}]}.
+```
+
+さてさて、どこかで見たことがあるような気がしますね。
+そう、mix.exsで似たような記述を見ました。
+
+#### File: mix.exs
+
+```elixir
+defmodule OtpSystemSample.Mixfile do
+  use Mix.Project
+
+  def project do
+    [app: :otp_system_sample,
+     version: "0.0.1",
+     elixir: "~> 1.2",
+     build_embedded: Mix.env == :prod,
+     start_permanent: Mix.env == :prod,
+     deps: deps]
+  end
+
+  # Configuration for the OTP application
+  #
+  # Type "mix help compile.app" for more information
+  def application do
+    [applications: [:logger]]
+  end
+
+  # Dependencies can be Hex packages:
+  #
+  #   {:mydep, "~> 0.3.0"}
+  #
+  # Or git/path repositories:
+  #
+  #   {:mydep, git: "https://github.com/elixir-lang/mydep.git", tag: "0.1.0"}
+  #
+  # Type "mix help deps" for more examples and options
+  defp deps do
+    []
+  end
+end
+```
+
+この情報を元に作られています。
+お次は、.appファイルへ書き込むためのコマンドについて見てみます。
+
+#### Example:
+
+```elixir
+> mix help compile.app
+# mix compile.app
+
+Writes an .app file.
+
+An `.app` file is a file containing Erlang terms that defines
+your application. Mix automatically generates this file based on
+your `mix.exs` configuration. You can learn more about OTP
+applications by seeing the documentation for the `Application`
+module.
+
+In order to generate the `.app` file, Mix expects your application
+to have both `:app` and `:version` keys. Furthermore, you can
+configure the generated application by defining an `application`
+function in your `mix.exs` with the following options:
+
+  * `:applications` - all applications your application depends
+    on at runtime. For example, if your application depends on
+    Erlang's `:crypto`, it needs to be added to this list. Most
+    of your dependencies must be added as well (unless they're
+    a development or test dependency). Mix and other tools use this
+    list in order to properly boot your application dependencies
+    before starting the application itself.
+
+  * `:registered` - the name of all registered processes in the
+    application. If your application defines a local GenServer
+    with name `MyServer`, it is recommended to add `MyServer`
+    to this list. It is mostly useful to detect conflicts
+    between applications that register the same names.
+
+  * `:mod` - specify a module to invoke when the application
+    is started, it must be in the format `{Mod, args}` where
+    args is often an empty list. The module specified here must
+    implement the callbacks defined by the `Application`
+    module.
+
+  * `:env` - default values for the application environment.
+    The application environment is one of the most common ways
+    to configure applications.
+
+Let's see an example `application` function:
+
+    def application do
+      [mod: {MyApp, []},
+       env: [default: :value],
+       applications: [:crypto]]
+    end
+
+Besides the options above, `.app` files also expects other
+options like `:modules` and `:vsn`, but those are automatically
+filled by Mix.
+
+## Command line options
+
+  * `--force` - forces compilation regardless of modification times
+
+
+Location: .../Elixir/lib/mix/ebin
+```
+
+"mix compile.app"コマンドとはなんぞや？
+.appファイルを書き込むコマンドになります。(そのまんま)
+
+.appファイルは、アプリケーションを定義するErlangの用語を含むファイルです。
+mixは自動的にmix.exs構成に基づいて、.appファイルを生成します。
+もっと詳しく知りたければ、Applicationモジュールのドキュメントを見て学びましょう。
+
+さてさて、ようやっと本題です。
+Applicationモジュールを利用して、アプリケーションの操作を行ってみましょう！
+
+まず、mix.exsにあるapplication/0に定義を追加します。
+
+#### File: mix.exs
+
+```elixir
+defmodule OtpSystemSample.Mixfile do
+  ...
+
+  def application do
+    [applications: [:logger],
+     mod: {Sellaprime, []},
+     registered: [:sellaprime]]
+  end
+
+  ...
+end
+```
+
+:modに指定しているモジュール名と同じ名前で、Applicationモジュールのコールバックを定義するモジュールを作成します。
+(Applicationモジュールを使うには、アプリケーションのコールバックを定義する必要があります)
+
+#### File: lib/sellaprime.ex
+
+```elixir
+defmodule Sellaprime do
+  use Application
+
+  def start(_type, start_args) do
+    SellaprimeSupervisor.start_link(start_args)
+  end
+
+  def stop(_state) do
+    :ok
+  end
+end
+```
+
+#### Note:
+
+```txt
+:modの二つ目の要素は、Application.start/2の二つ目の引数になります。
+```
+
+スーパバイザのstart_link/0で初期値の引数を取っていませんでしたので、スーパバイザを少々修正します。
+
+#### File: lib/sellaprime_supervisor.ex
+
+```elixir
+defmodule SellaprimeSupervisor do
+  use Supervisor
+
+  def start_link(args) do
+    Supervisor.start_link(__MODULE__, args, name: __MODULE__)
+  end
+
+  ...
+end
+```
+
+では、起動してみましょう。
+
+#### Example:
+
+```elixir
+> iex --erl "-boot start_sasl -config elog" -S mix
+...
+"*** my_alarm_handler init:"
+{:xyz, {:alarm_handler, []}}
+"Elixir.AreaServer starting\n"
+"Elixir.PrimeServer starting\n"
+
+iex>
+```
+
+起動時に、メッセージが出力されていますね！
+さて、少し蛇足ですが、アプリケーションのロード/アンロード、開始/停止をやってみます。
+
+#### Example:
+
+```elixir
+iex> Application.loaded_applications
+[{:logger, 'logger', '1.2.0'}, {:kernel, 'ERTS  CXC 138 10', '4.1.1'},
+ {:sasl, 'SASL  CXC 138 11', '2.6.1'}, {:mix, 'mix', '1.2.0'},
+ {:compiler, 'ERTS  CXC 138 10', '6.0.2'}, {:iex, 'iex', '1.2.0'},
+ {:otp_system_sample, 'otp_system_sample', '0.0.1'},
+ {:elixir, 'elixir', '1.2.0'}, {:stdlib, 'ERTS  CXC 138 10', '2.7'}]
+iex> Application.stop(:otp_system_sample)
+"Elixir.PrimeServer stopping\n"
+"Elixir.AreaServer stopping\n"
+:ok
+iex>
+19:54:57.023 [info]  Application otp_system_sample exited: :stopped
+iex> Application.unload(:otp_system_sample)
+:ok
+iex> Application.loaded_applications
+[{:logger, 'logger', '1.2.0'}, {:kernel, 'ERTS  CXC 138 10', '4.1.1'},
+ {:sasl, 'SASL  CXC 138 11', '2.6.1'}, {:mix, 'mix', '1.2.0'},
+ {:compiler, 'ERTS  CXC 138 10', '6.0.2'}, {:iex, 'iex', '1.2.0'},
+ {:elixir, 'elixir', '1.2.0'}, {:stdlib, 'ERTS  CXC 138 10', '2.7'}]
+iex> Application.load(:otp_system_sample)
+:ok
+iex> Application.loaded_applications
+[{:logger, 'logger', '1.2.0'}, {:kernel, 'ERTS  CXC 138 10', '4.1.1'},
+ {:sasl, 'SASL  CXC 138 11', '2.6.1'}, {:mix, 'mix', '1.2.0'},
+ {:compiler, 'ERTS  CXC 138 10', '6.0.2'}, {:iex, 'iex', '1.2.0'},
+ {:otp_system_sample, 'otp_system_sample', '0.0.1'},
+ {:elixir, 'elixir', '1.2.0'}, {:stdlib, 'ERTS  CXC 138 10', '2.7'}]
+iex> Application.start(:otp_system_sample)
+"*** my_alarm_handler init:"
+{:xyz, :error}
+"Elixir.AreaServer starting\n"
+"Elixir.PrimeServer starting\n"
+:ok
+```
+
+おまけ
+
+#### Example:
+
+```elixir
+iex> :observer.start
+:ok
+```
+
+GUIが立ち上がり、様々な情報を確認できる。
+[こんな感じ](https://twitter.com/darui_kara/status/711510554997690368)に見える。
+
+R16でappmon廃止され、observerとなった。
+見てそのまんまですが、アプリケーションのモニタリングができます。
+
+# Bibliography
+[Elixir v1.2.3 - Application](http://elixir-lang.org/docs/stable/elixir/Application.html)
+[Elixir - Supervisor and Application](http://elixir-lang.org/getting-started/mix-otp/supervisor-and-application.html)
+[Erlang - 1 Appmon](http://erlang.org/documentation/doc-5.9.2/lib/appmon-2.1.14.1/doc/html/appmon_chapter.html)
+[Erlang - Observer Reference Manual](http://erlang.org/doc/apps/observer/)
+[Erlang - 2 Observer](http://erlang.org/doc/apps/observer/observer_ug.html)
